@@ -23,7 +23,9 @@ In your Railway project dashboard → **Variables** tab, add:
 | `WHATSAPP_TOKEN` | Permanent token from Meta Business Settings → System Users |
 | `WHATSAPP_PHONE_NUMBER_ID` | The Phone Number ID from Meta WhatsApp API Setup page |
 | `PORT` | `3000` |
-| `ANTHROPIC_API_KEY` | Claude API key from the Anthropic Console |
+| `AI_PROVIDER` | `deepseek` (default, active) or `anthropic` (fallback plan) |
+| `DEEPSEEK_API_KEY` | DeepSeek API key |
+| `ANTHROPIC_API_KEY` | Claude API key — fallback plan, only needed once `AI_PROVIDER=anthropic` |
 | `CX_ALERT_NUMBER` | CX team's WhatsApp number, international format, no `+` |
 | `RESPONDIO_WEBHOOK_URL` | Optional — only once Respond.io is configured |
 

@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const Anthropic = require('@anthropic-ai/sdk');
+const OpenAI = require('openai');
 
 const app = express();
 app.use(express.json());
@@ -11,12 +12,15 @@ const {
   WHATSAPP_TOKEN,
   WHATSAPP_PHONE_NUMBER_ID,
   ANTHROPIC_API_KEY,
+  DEEPSEEK_API_KEY,
+  AI_PROVIDER = 'deepseek', // 'deepseek' (default, cheap) or 'anthropic' (fallback plan)
   CX_ALERT_NUMBER,
   RESPONDIO_WEBHOOK_URL,
   PORT = 3000,
 } = process.env;
 
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+const deepseek = new OpenAI({ apiKey: DEEPSEEK_API_KEY, baseURL: 'https://api.deepseek.com' });
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
 // Source of truth: Crestville_Bot_System_Prompt.md — do not edit without IT/CX sign-off.
@@ -374,10 +378,10 @@ const ESCALATION_KEYWORDS = [
 
 const ESCALATION_PHRASE = 'I am connecting you with a Customer Experience Representative';
 
-function shouldEscalate(claudeReply, guestMessage) {
+function shouldEscalate(aiReply, guestMessage) {
   const lowerMessage = guestMessage.toLowerCase();
   const keywordHit = ESCALATION_KEYWORDS.some((keyword) => lowerMessage.includes(keyword));
-  const phraseHit = claudeReply.includes(ESCALATION_PHRASE);
+  const phraseHit = aiReply.includes(ESCALATION_PHRASE);
   return keywordHit || phraseHit;
 }
 
@@ -402,15 +406,43 @@ function isRateLimited(phoneNumber) {
   return false;
 }
 
-// ─── Claude Integration ────────────────────────────────────────────────────────
+// ─── Claude Integration (fallback plan — fund ANTHROPIC_API_KEY to use) ───────
 async function getClaudeResponse(conversationHistory, newMessage) {
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    system: [
+      {
+        type: 'text',
+        text: SYSTEM_PROMPT,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
     messages: [...conversationHistory, { role: 'user', content: newMessage }],
   });
   return response.content[0].text;
+}
+
+// ─── DeepSeek Integration (default) ────────────────────────────────────────────
+async function getDeepSeekResponse(conversationHistory, newMessage) {
+  const response = await deepseek.chat.completions.create({
+    model: 'deepseek-v4-flash',
+    max_tokens: 1024,
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      ...conversationHistory,
+      { role: 'user', content: newMessage },
+    ],
+  });
+  return response.choices[0].message.content;
+}
+
+// ─── AI Provider Dispatch ──────────────────────────────────────────────────────
+async function getAIResponse(conversationHistory, newMessage) {
+  if (AI_PROVIDER === 'anthropic') {
+    return getClaudeResponse(conversationHistory, newMessage);
+  }
+  return getDeepSeekResponse(conversationHistory, newMessage);
 }
 
 // ─── CX Escalation Handling ────────────────────────────────────────────────────
@@ -479,26 +511,26 @@ async function handleIncomingMessage(from, messageType, messageContent) {
 
   const history = getHistory(from);
 
-  let claudeReply;
+  let aiReply;
   try {
-    claudeReply = await getClaudeResponse(history, messageContent);
+    aiReply = await getAIResponse(history, messageContent);
   } catch (err) {
-    console.error('Claude API error:', err.message);
-    await sendCXAlert(`Claude API failed to respond to ${from}. Message: "${messageContent}". Please follow up.`);
+    console.error(`${AI_PROVIDER} API error:`, err.message);
+    await sendCXAlert(`${AI_PROVIDER} API failed to respond to ${from}. Message: "${messageContent}". Please follow up.`);
     return;
   }
 
   const updatedHistory = [
     ...history,
     { role: 'user', content: messageContent },
-    { role: 'assistant', content: claudeReply },
+    { role: 'assistant', content: aiReply },
   ];
   saveHistory(from, updatedHistory);
 
-  if (shouldEscalate(claudeReply, messageContent)) {
+  if (shouldEscalate(aiReply, messageContent)) {
     await handleEscalation(from, updatedHistory, messageContent);
   } else {
-    await sendWhatsAppMessage(from, claudeReply);
+    await sendWhatsAppMessage(from, aiReply);
   }
 }
 
